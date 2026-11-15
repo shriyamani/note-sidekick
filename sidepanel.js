@@ -112,9 +112,12 @@ function navRow(icon, label, count, onClick, extraClass = "") {
 }
 function renderFolders(all, q) {
   const count = (fn) => all.filter(fn).length;
-  const rows = sortedFolders().map((f) => ({ icon: "📁", name: f.name, id: f.id, n: count((n) => n.folderId === f.id) }))
-    .filter((r) => !q || r.name.toLowerCase().includes(q));
-  for (const r of rows) noteList.append(navRow(r.icon, r.name, r.n, () => setView(r.id)));
+  const rows = sortedFolders().filter((f) => !q || f.name.toLowerCase().includes(q));
+  for (const f of rows) {
+    const li = navRow("📁", f.name, count((n) => n.folderId === f.id), () => setView(f.id));
+    li.append(folderActions(f, li.querySelector(".name")));
+    noteList.append(li);
+  }
   const add = document.createElement("li");
   add.className = "nav-row add-row";
   add.textContent = "+ New folder";
@@ -134,43 +137,95 @@ $("#renameFolderBtn").onclick = () => {
 };
 $("#deleteFolderBtn").onclick = async () => {
   const f = folderById(view);
-  if (!f) return;
+  if (f && await deleteFolder(f)) setView("folders");
+};
+// Asks first; moves the folder's notes back to All notes. Returns true if deleted.
+async function deleteFolder(f) {
   const inside = (await getAllNotes()).filter((n) => n.folderId === f.id);
   const msg = inside.length
     ? `Delete the folder "${f.name}"?\n\nIts ${inside.length} note${inside.length > 1 ? "s" : ""} won't be deleted — they'll stay in All notes.`
     : `Delete the empty folder "${f.name}"?`;
-  if (!confirm(msg)) return;
+  if (!confirm(msg)) return false;
   const batch = {};
   for (const n of inside) batch[key(n.id)] = { ...n, folderId: null };
   folders = folders.filter((x) => x.id !== f.id);
   await chrome.storage.local.set({ ...batch, folders });
-  setView("folders");
-};
-function fillFolderSelect(n) {
-  const sel = $("#folderSelect");
-  sel.innerHTML = "";
-  sel.append(new Option("No folder", ""));
-  for (const f of sortedFolders()) sel.append(new Option("📁 " + f.name, f.id));
-  sel.append(new Option("+ New folder…", "__new"));
-  sel.value = folderById(n.folderId) ? n.folderId : "";
+  return true;
 }
-$("#folderSelect").onchange = async (e) => {
+// Folder button in the note header: highlighted when the note is in a folder; opens a menu.
+const folderBtn = $("#folderBtn"), folderMenu = $("#folderMenu");
+function updateFolderBtn(n) {
+  const f = folderById(n.folderId);
+  folderBtn.classList.toggle("active", !!f);
+  folderBtn.title = f ? `In folder: ${f.name}` : "Move to folder";
+  closeFolderMenu();
+}
+function closeFolderMenu() {
+  folderMenu.classList.add("hidden");
+  folderBtn.setAttribute("aria-expanded", "false");
+}
+async function moveCurrentTo(id) {
+  closeFolderMenu();
   if (!current) return;
-  let id = e.target.value;
-  if (id === "__new") {
-    const name = prompt("New folder name:")?.trim();
-    if (!name) { fillFolderSelect(current); return; }
-    id = (await addFolder(name)).id;
-  }
-  current.folderId = id || null;
+  current.folderId = id;
   await putNote(current);
-  fillFolderSelect(current);
+  updateFolderBtn(current);
+}
+function buildFolderMenu() {
+  folderMenu.innerHTML = "";
+  const item = (label, cls, onPick) => {
+    const b = document.createElement("button");
+    b.className = "fm-item " + cls; b.setAttribute("role", "menuitem"); b.textContent = label;
+    b.onclick = onPick;
+    folderMenu.append(b);
+    return b;
+  };
+  const cur = folderById(current?.folderId) ? current.folderId : null;
+  const list = sortedFolders();
+  if (list.length) {
+    for (const f of list) item("📁 " + f.name, f.id === cur ? "current" : "", () => moveCurrentTo(f.id));
+    if (cur) item("Remove from folder", "muted-item", () => moveCurrentTo(null));
+    folderMenu.append(Object.assign(document.createElement("div"), { className: "fm-sep" }));
+  } else {
+    folderMenu.append(Object.assign(document.createElement("div"), { className: "fm-empty", textContent: "No folders yet" }));
+  }
+  const add = item("+ New folder", "add-item", () => {
+    const input = document.createElement("input");
+    input.className = "name-input fm-input"; input.placeholder = "Folder name";
+    add.replaceWith(input);
+    input.focus();
+    let done = false;
+    const finish = async (ok) => {
+      if (done) return; done = true;
+      const name = input.value.trim();
+      if (ok && name) await moveCurrentTo((await addFolder(name)).id);
+      else closeFolderMenu();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish(true);
+      if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+    });
+    input.addEventListener("blur", () => finish(true));
+  });
+}
+folderBtn.onclick = async () => {
+  if (!folderMenu.classList.contains("hidden")) { closeFolderMenu(); return; }
+  await loadFolders();
+  buildFolderMenu();
+  folderMenu.classList.remove("hidden");
+  folderBtn.setAttribute("aria-expanded", "true");
 };
+document.addEventListener("mousedown", (e) => { if (!e.target.closest(".folder-wrap")) closeFolderMenu(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || folderMenu.classList.contains("hidden")) return;
+  e.stopImmediatePropagation(); // Escape closes the menu instead of leaving the note
+  closeFolderMenu();
+}, true);
 
 // Hover buttons on a note row: rename (inline) and delete.
 const ICON_EDIT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
 const ICON_TRASH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1zM18 7H6v12c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7z"/></svg>';
-function rowActions(n, titleEl) {
+function hoverActions(onRename, onDelete, what = "") {
   const wrap = document.createElement("div");
   wrap.className = "row-actions";
   const btn = (cls, title, svg, fn) => {
@@ -179,21 +234,31 @@ function rowActions(n, titleEl) {
     b.onclick = (e) => { e.stopPropagation(); fn(); };
     wrap.append(b);
   };
-  btn("", "Rename", ICON_EDIT, () => {
+  btn("", "Rename" + what, ICON_EDIT, onRename);
+  btn("danger", "Delete" + what, ICON_TRASH, onDelete);
+  return wrap;
+}
+function rowActions(n, titleEl) {
+  return hoverActions(() => {
     const input = askName(titleEl, n.title || "", async (title) => {
       n.title = title;
       await putNote(n);
       renderList();
     });
     input.placeholder = "Note title";
-  });
-  btn("danger", "Delete", ICON_TRASH, async () => {
+  }, async () => {
     const isEmpty = !n.title && !plainText(n.html) && !/<img/i.test(n.html);
     if (!isEmpty && !confirm(`Delete "${n.title || "Untitled"}"?`)) return;
     await removeNote(n.id);
     renderList();
   });
-  return wrap;
+}
+function folderActions(f, nameEl) {
+  return hoverActions(
+    () => askName(nameEl, f.name, async (name) => { f.name = name; await saveFolders(); renderList(); }),
+    async () => { if (await deleteFolder(f)) renderList(); },
+    " folder"
+  );
 }
 
 async function renderList() {
@@ -274,7 +339,7 @@ function openNote(n) {
   editor.innerHTML = n.html || "";
   pinBtn.textContent = n.pinned ? "★" : "☆";
   pinBtn.title = n.pinned ? "Remove from Favorites" : "Add to Favorites";
-  fillFolderSelect(n);
+  updateFolderBtn(n);
   saveState.textContent = "";
   listView.classList.add("hidden");
   editorView.classList.remove("hidden");

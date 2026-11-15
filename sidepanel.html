@@ -34,7 +34,10 @@
       <button id="backBtn" class="ghost" title="All notes (Esc)">← All notes</button>
       <span id="saveState" class="muted small"></span>
       <div class="spacer"></div>
-      <select id="folderSelect" title="Move to folder" aria-label="Folder"></select>
+      <span class="folder-wrap">
+        <button id="folderBtn" class="icon hdr-btn" title="Move to folder" aria-label="Move to folder" aria-haspopup="true" aria-expanded="false"><svg class="hdr-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.17 6l2 2H20v10H4V6h5.17M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg></button>
+        <div id="folderMenu" class="folder-menu hidden" role="menu" aria-label="Move to folder"></div>
+      </span>
       <button id="pinBtn" class="icon" title="Add to Favorites">☆</button>
       <button id="deleteBtn" class="icon danger" title="Delete note">🗑</button>
     </header>
