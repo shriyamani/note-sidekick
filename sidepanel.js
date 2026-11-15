@@ -1,6 +1,7 @@
-// Snap Notes — side panel logic.
+// Note Sidekick — side panel logic.
 // Each note is stored in chrome.storage.local under "note:<id>":
-//   { id, title, html, pinned, created, updated }
+//   { id, title, html, pinned, folderId, created, updated }
+// Folders are stored under "folders" (see the folders section).
 // Images live inside the note HTML as data: URLs ("unlimitedStorage" lifts the 10 MB cap).
 
 const $ = (s) => document.querySelector(s);
@@ -42,16 +43,189 @@ function fmtDate(t) {
     : d.toLocaleDateString([], { month: "short", day: "numeric", year: d.getFullYear() === now.getFullYear() ? undefined : "numeric" });
 }
 
+// ---------- folders ----------
+// Folders live under "folders": [{ id, name }]. A note's folderId points at one (or is null).
+// "Favorites" is built in: it shows every starred (pinned) note, whatever folder it's in.
+// List screens: "all" (every note, with a Folders row on top) → "folders" (the folder list)
+//               → "fav" or a folder id (that folder's notes).
+let folders = [];
+let view = "all";
+try { view = localStorage.getItem("view") || "all"; } catch {}
+const loadFolders = async () => (folders = (await chrome.storage.local.get("folders")).folders || []);
+const saveFolders = () => chrome.storage.local.set({ folders });
+const folderById = (id) => folders.find((f) => f.id === id);
+const sortedFolders = () => [...folders].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+const inFolderView = () => view === "fav" || !!folderById(view);
+
+function setView(v) {
+  view = v;
+  try { localStorage.setItem("view", v); } catch {}
+  search.value = "";
+  renderList();
+}
+const goUp = () => setView(folderById(view) ? "folders" : "all");
+async function addFolder(name) {
+  const existing = folders.find((f) => f.name.toLowerCase() === name.toLowerCase());
+  if (existing) return existing;
+  const f = { id: newId(), name };
+  folders.push(f);
+  await saveFolders();
+  return f;
+}
+// Swap an element for a text box; calls onDone(name) on Enter/blur, re-renders on Escape.
+function askName(anchor, initial, onDone) {
+  const input = document.createElement("input");
+  input.className = "name-input";
+  input.placeholder = "Folder name";
+  input.value = initial;
+  anchor.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (ok) => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    input.replaceWith(anchor);
+    if (ok && v) onDone(v); else renderList();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish(true);
+    if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("click", (e) => e.stopPropagation()); // don't open the row it sits in
+  return input;
+}
+// One row in the list: icon, name, count, chevron.
+function navRow(icon, label, count, onClick, extraClass = "") {
+  const li = document.createElement("li");
+  li.className = "nav-row " + extraClass;
+  const i = document.createElement("span"); i.className = "icon"; i.textContent = icon;
+  const name = document.createElement("span"); name.className = "name"; name.textContent = label;
+  li.append(i, name);
+  if (count !== null) { const n = document.createElement("span"); n.className = "n"; n.textContent = count; li.append(n); }
+  const chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "›";
+  li.append(chev);
+  li.onclick = onClick;
+  return li;
+}
+function renderFolders(all, q) {
+  const count = (fn) => all.filter(fn).length;
+  const rows = sortedFolders().map((f) => ({ icon: "📁", name: f.name, id: f.id, n: count((n) => n.folderId === f.id) }))
+    .filter((r) => !q || r.name.toLowerCase().includes(q));
+  for (const r of rows) noteList.append(navRow(r.icon, r.name, r.n, () => setView(r.id)));
+  const add = document.createElement("li");
+  add.className = "nav-row add-row";
+  add.textContent = "+ New folder";
+  add.onclick = () => askName(add, "", async (name) => { await addFolder(name); renderList(); });
+  noteList.append(add);
+  $("#empty").classList.toggle("hidden", rows.length > 0);
+  $("#empty").textContent = q ? "No folders match your search." : "No folders yet.";
+}
+$("#listBackBtn").onclick = goUp;
+// Header shortcuts: click again to go back to all notes.
+$("#foldersBtn").onclick = () => setView(view === "folders" ? "all" : "folders");
+$("#favBtn").onclick = () => setView(view === "fav" ? "all" : "fav");
+$("#renameFolderBtn").onclick = () => {
+  const f = folderById(view);
+  if (!f) return;
+  askName($("#listTitle"), f.name, async (name) => { f.name = name; await saveFolders(); renderList(); });
+};
+$("#deleteFolderBtn").onclick = async () => {
+  const f = folderById(view);
+  if (!f) return;
+  const inside = (await getAllNotes()).filter((n) => n.folderId === f.id);
+  const msg = inside.length
+    ? `Delete the folder "${f.name}"?\n\nIts ${inside.length} note${inside.length > 1 ? "s" : ""} won't be deleted — they'll stay in All notes.`
+    : `Delete the empty folder "${f.name}"?`;
+  if (!confirm(msg)) return;
+  const batch = {};
+  for (const n of inside) batch[key(n.id)] = { ...n, folderId: null };
+  folders = folders.filter((x) => x.id !== f.id);
+  await chrome.storage.local.set({ ...batch, folders });
+  setView("folders");
+};
+function fillFolderSelect(n) {
+  const sel = $("#folderSelect");
+  sel.innerHTML = "";
+  sel.append(new Option("No folder", ""));
+  for (const f of sortedFolders()) sel.append(new Option("📁 " + f.name, f.id));
+  sel.append(new Option("+ New folder…", "__new"));
+  sel.value = folderById(n.folderId) ? n.folderId : "";
+}
+$("#folderSelect").onchange = async (e) => {
+  if (!current) return;
+  let id = e.target.value;
+  if (id === "__new") {
+    const name = prompt("New folder name:")?.trim();
+    if (!name) { fillFolderSelect(current); return; }
+    id = (await addFolder(name)).id;
+  }
+  current.folderId = id || null;
+  await putNote(current);
+  fillFolderSelect(current);
+};
+
+// Hover buttons on a note row: rename (inline) and delete.
+const ICON_EDIT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1zM18 7H6v12c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7z"/></svg>';
+function rowActions(n, titleEl) {
+  const wrap = document.createElement("div");
+  wrap.className = "row-actions";
+  const btn = (cls, title, svg, fn) => {
+    const b = document.createElement("button");
+    b.className = "row-btn " + cls; b.title = title; b.setAttribute("aria-label", title); b.innerHTML = svg;
+    b.onclick = (e) => { e.stopPropagation(); fn(); };
+    wrap.append(b);
+  };
+  btn("", "Rename", ICON_EDIT, () => {
+    const input = askName(titleEl, n.title || "", async (title) => {
+      n.title = title;
+      await putNote(n);
+      renderList();
+    });
+    input.placeholder = "Note title";
+  });
+  btn("danger", "Delete", ICON_TRASH, async () => {
+    const isEmpty = !n.title && !plainText(n.html) && !/<img/i.test(n.html);
+    if (!isEmpty && !confirm(`Delete "${n.title || "Untitled"}"?`)) return;
+    await removeNote(n.id);
+    renderList();
+  });
+  return wrap;
+}
+
 async function renderList() {
   const q = search.value.trim().toLowerCase();
-  let notes = await getAllNotes();
+  await loadFolders();
+  if (view !== "all" && view !== "folders" && !inFolderView()) view = "all";
+  const all = await getAllNotes();
+  const folder = folderById(view);
+
+  // header
+  $("#listTitle").textContent = view === "folders" ? "Folders" : view === "fav" ? "★ Favorites" : folder ? "📁 " + folder.name : "Notes";
+  $("#listBackBtn").classList.toggle("hidden", view === "all");
+  $("#listBackBtn").title = folder ? "Folders" : "All notes";
+  $("#renameFolderBtn").classList.toggle("hidden", !folder);
+  $("#deleteFolderBtn").classList.toggle("hidden", !folder);
+  $("#newBtn").classList.toggle("hidden", view === "folders");
+  $("#foldersBtn").classList.toggle("active", view === "folders" || !!folder);
+  $("#favBtn").classList.toggle("active", view === "fav");
+  search.placeholder = view === "folders" ? "Search folders…" : "Search notes…";
+
+  noteList.innerHTML = "";
+  if (view === "folders") { $("#count").textContent = ""; renderFolders(all, q); return; }
+
+  let notes = all.filter((n) => view === "all" || (view === "fav" ? n.pinned : n.folderId === view));
   $("#count").textContent = notes.length ? `(${notes.length})` : "";
   notes.sort((a, b) => (b.pinned - a.pinned) || (b.updated - a.updated));
   if (q) notes = notes.filter((n) => (n.title + " " + plainText(n.html)).toLowerCase().includes(q));
 
-  noteList.innerHTML = "";
   $("#empty").classList.toggle("hidden", notes.length > 0);
-  if (!notes.length && q) { $("#empty").textContent = "No notes match your search."; }
+  if (q) $("#empty").textContent = "No notes match your search.";
+  else if (view === "fav") $("#empty").textContent = "No favorites yet. Star a note (☆) to add it here.";
+  else if (folder) $("#empty").innerHTML = "This folder is empty. Click <b>+ New</b> to add a note here, or move a note in with the folder menu at the top of the note.";
   else $("#empty").innerHTML = "No notes yet. Click <b>+ New</b> to start.";
 
   for (const n of notes) {
@@ -68,7 +242,8 @@ async function renderList() {
     const imgCount = (n.html.match(/<img/g) || []).length;
     const d = document.createElement("div");
     d.className = "d";
-    d.textContent = fmtDate(n.updated) + (imgCount ? ` · ${imgCount} image${imgCount > 1 ? "s" : ""}` : "");
+    const nf = !folder && folderById(n.folderId);
+    d.textContent = fmtDate(n.updated) + (imgCount ? ` · ${imgCount} image${imgCount > 1 ? "s" : ""}` : "") + (nf ? ` · 📁 ${nf.name}` : "");
     meta.append(t, p, d);
     li.append(meta);
     const src = firstImage(n.html);
@@ -79,6 +254,7 @@ async function renderList() {
       li.append(img);
     }
     li.onclick = () => openNote(n);
+    li.append(rowActions(n, t));
     noteList.append(li);
   }
 }
@@ -97,6 +273,8 @@ function openNote(n) {
   titleInput.value = n.title || "";
   editor.innerHTML = n.html || "";
   pinBtn.textContent = n.pinned ? "★" : "☆";
+  pinBtn.title = n.pinned ? "Remove from Favorites" : "Add to Favorites";
+  fillFolderSelect(n);
   saveState.textContent = "";
   listView.classList.add("hidden");
   editorView.classList.remove("hidden");
@@ -104,7 +282,8 @@ function openNote(n) {
 }
 async function createNote(initialHtml = "") {
   const now = Date.now();
-  const n = { id: newId(), title: "", html: initialHtml, pinned: false, created: now, updated: now };
+  // New notes land in the folder you're looking at (or Favorites)
+  const n = { id: newId(), title: "", html: initialHtml, pinned: view === "fav", folderId: folderById(view) ? view : null, created: now, updated: now };
   await putNote(n);
   openNote(n);
   return n;
@@ -195,7 +374,8 @@ async function insertImageFiles(files) {
 
 // ---------- pasting ----------
 const ALLOWED = new Set(["B","STRONG","I","EM","U","S","P","BR","DIV","UL","OL","LI","A","H1","H2","H3","H4","BLOCKQUOTE","PRE","CODE","IMG","SPAN","TABLE","THEAD","TBODY","TR","TD","TH","HR"]);
-function sanitize(html) {
+// keepColors: preserve our own text color / highlight styles (used for imports, not pastes).
+function sanitize(html, keepColors = false) {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const walk = (el) => {
     for (const child of [...el.children]) {
@@ -207,6 +387,14 @@ function sanitize(html) {
       for (const a of [...child.attributes]) {
         const keep = (child.tagName === "A" && a.name === "href" && /^https?:/i.test(a.value)) ||
                      (child.tagName === "IMG" && a.name === "src" && /^(https?:|data:image\/)/i.test(a.value));
+        if (keepColors && child.tagName === "SPAN" && a.name === "style") {
+          const { color, backgroundColor } = child.style;
+          child.removeAttribute("style");
+          if (/^(rgb\([\d, ]+\)|#[0-9a-f]{3,8}|var\(--text\)|transparent)$/i.test(color)) child.style.color = color;
+          if (/^(rgb\([\d, ]+\)|#[0-9a-f]{3,8}|transparent)$/i.test(backgroundColor)) child.style.backgroundColor = backgroundColor;
+          if (!child.getAttribute("style")) child.removeAttribute("style");
+          continue;
+        }
         if (!keep) child.removeAttribute(a.name);
       }
       if (child.tagName === "A") child.setAttribute("target", "_blank");
@@ -319,7 +507,7 @@ async function imagesToPng(imgs) {
   }
   return canvasToBlob(c);
 }
-// Separate images as HTML, so Docs, Gmail, Notion, Word and Snap Notes get each one individually.
+// Separate images as HTML, so Docs, Gmail, Notion, Word and Note Sidekick get each one individually.
 async function imagesToHtml(imgs) {
   const parts = [];
   for (const i of imgs) {
@@ -401,6 +589,11 @@ editor.addEventListener("dblclick", (e) => {
 });
 $("#lightbox").onclick = () => $("#lightbox").classList.add("hidden");
 editor.addEventListener("keydown", (e) => {
+  if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault(); // keep focus in the note
+    indent(e.shiftKey);
+    return;
+  }
   const mod = e.ctrlKey || e.metaKey;
   const picked = selectedImgs();
   if (mod && (e.key === "c" || e.key === "x")) {
@@ -426,8 +619,111 @@ document.querySelectorAll(".toolbar [data-cmd]").forEach((b) =>
     e.preventDefault();               // keep the text selection
     document.execCommand(b.dataset.cmd);
     scheduleSave();
+    updateToolbarState();
   })
 );
+
+// Highlight toolbar buttons whose formatting is active at the caret/selection
+function updateToolbarState() {
+  const sel = getSelection();
+  const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+  const inEditor = !!node && editor.contains(node);
+  const inChecklist = inEditor && !!node.closest("ul.checklist");
+  document.querySelectorAll(".toolbar [data-cmd]").forEach((b) => {
+    let on = false;
+    if (inEditor) {
+      try { on = document.queryCommandState(b.dataset.cmd); } catch {}
+      if (b.dataset.cmd === "insertUnorderedList" && inChecklist) on = false;
+    }
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on);
+  });
+  $("#checkBtn").classList.toggle("active", inChecklist);
+  updateColorBars(inEditor ? node : null);
+}
+
+// ---------- text color & highlight ----------
+const TEXT_COLORS = ["#d93025", "#e8710a", "#b8860b", "#188038", "#1a73e8", "#9334e6",
+                     "#d01884", "#795548", "#5f6368", "#0b8043", "#12b5cb", "#3f51b5"];
+const HILITE_COLORS = ["#fff475", "#fbbc04", "#ccff90", "#a7ffeb", "#aecbfa", "#d7aefb",
+                       "#fdcfe8", "#f28b82", "#ffd8a8", "#e6c9a8", "#e8eaed", "#cbf0f8"];
+const SENTINEL = "rgb(1, 2, 3)"; // marks "remove color" until we clean it up
+const COLOR_KINDS = {
+  text:   { cmd: "foreColor",   prop: "color",           btn: $("#textColorBtn"), menu: $("#textColorMenu"), colors: TEXT_COLORS,   resetLabel: "Default color" },
+  hilite: { cmd: "hiliteColor", prop: "backgroundColor", btn: $("#hiliteBtn"),    menu: $("#hiliteMenu"),    colors: HILITE_COLORS, resetLabel: "No highlight" },
+};
+
+// Nearest inline color/highlight set inside the editor for a node, or "".
+function inlineColorAt(node, prop) {
+  for (let el = node; el && el !== editor; el = el.parentElement) if (el.style?.[prop]) return el.style[prop];
+  return "";
+}
+function updateColorBars(node) {
+  for (const k of Object.values(COLOR_KINDS)) {
+    const c = node ? inlineColorAt(node, k.prop) : "";
+    k.btn.querySelector(".tb-bar").style.fill = c && c !== SENTINEL ? c : "";
+    k.current = c;
+  }
+}
+// Replace sentinel colors: drop them, or neutralize an outer color they sit inside.
+function cleanSentinels() {
+  for (const k of Object.values(COLOR_KINDS)) {
+    editor.querySelectorAll("[style]").forEach((el) => {
+      if (el.style[k.prop] !== SENTINEL) return;
+      const outer = el.parentElement && el.parentElement !== editor && inlineColorAt(el.parentElement, k.prop);
+      el.style[k.prop] = outer ? (k.prop === "color" ? "var(--text)" : "transparent") : "";
+      if (!el.getAttribute("style").trim()) {
+        if (el.tagName === "SPAN") el.replaceWith(...el.childNodes);
+        else el.removeAttribute("style");
+      }
+    });
+  }
+}
+function applyColor(k, color) {
+  editor.focus();
+  document.execCommand("styleWithCSS", false, true); // <span style> instead of <font>
+  document.execCommand(k.cmd, false, color || SENTINEL);
+  document.execCommand("styleWithCSS", false, false); // keep <b>/<i>/<u> for the other buttons
+  cleanSentinels();
+  scheduleSave();
+  updateToolbarState();
+}
+function closeColorMenus() {
+  for (const k of Object.values(COLOR_KINDS)) { k.menu.classList.add("hidden"); k.btn.setAttribute("aria-expanded", "false"); }
+}
+for (const k of Object.values(COLOR_KINDS)) {
+  const grid = document.createElement("div");
+  grid.className = "swatches";
+  for (const c of k.colors) {
+    const s = document.createElement("button");
+    s.className = "swatch"; s.style.background = c; s.title = c; s.setAttribute("role", "menuitem");
+    s.addEventListener("mousedown", (e) => { e.preventDefault(); closeColorMenus(); applyColor(k, c); });
+    grid.append(s);
+  }
+  const reset = document.createElement("button");
+  reset.className = "reset"; reset.textContent = k.resetLabel; reset.setAttribute("role", "menuitem");
+  reset.addEventListener("mousedown", (e) => { e.preventDefault(); closeColorMenus(); applyColor(k, null); });
+  k.menu.append(grid, reset);
+  k.btn.addEventListener("mousedown", (e) => {
+    e.preventDefault(); // keep the text selection
+    const open = k.menu.classList.contains("hidden");
+    closeColorMenus();
+    if (!open) return;
+    k.menu.querySelectorAll(".swatch").forEach((s) =>
+      s.classList.toggle("current", !!k.current && s.style.backgroundColor === k.current));
+    k.menu.classList.remove("hidden");
+    k.btn.setAttribute("aria-expanded", "true");
+  });
+}
+document.addEventListener("mousedown", (e) => { if (!e.target.closest(".color-wrap")) closeColorMenus(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !document.querySelector(".color-menu:not(.hidden)")) return;
+  e.stopImmediatePropagation(); // Escape closes the menu instead of leaving the note
+  closeColorMenus();
+}, true);
+editor.addEventListener("input", cleanSentinels); // text typed after "remove color" at a caret
+document.addEventListener("selectionchange", updateToolbarState);
+editor.addEventListener("keyup", updateToolbarState);
 $("#checkBtn").addEventListener("mousedown", (e) => {
   e.preventDefault();
   const sel = getSelection();
@@ -437,7 +733,34 @@ $("#checkBtn").addEventListener("mousedown", (e) => {
   const ul = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement).closest("ul");
   if (ul) ul.classList.add("checklist");
   scheduleSave();
+  updateToolbarState();
 });
+
+// ---------- indent / outdent ----------
+// In a list: nest / un-nest the item. Elsewhere: insert / remove a 4-space tab at the caret.
+const TAB = "\u00a0".repeat(4);
+function indent(out) {
+  const sel = getSelection();
+  const n = sel.anchorNode;
+  const el = n && (n.nodeType === 1 ? n : n.parentElement);
+  if (!el || !editor.contains(el)) return;
+  if (el.closest("li")) {
+    document.execCommand(out ? "outdent" : "indent");
+    // nested lists created inside a checklist stay checklists
+    editor.querySelectorAll("ul.checklist ul:not(.checklist)").forEach((u) => u.classList.add("checklist"));
+  } else {
+    if (!sel.isCollapsed) sel.collapseToStart();
+    if (!out) document.execCommand("insertText", false, TAB);
+    else {
+      const r = sel.getRangeAt(0);
+      const before = r.startContainer.nodeType === 3 ? r.startContainer.data.slice(0, r.startOffset) : "";
+      const m = before.match(/[\u00a0 \t]{1,4}$/);
+      if (m) for (let i = 0; i < m[0].length; i++) document.execCommand("delete");
+    }
+  }
+  scheduleSave();
+  updateToolbarState();
+}
 
 // ---------- buttons & keys ----------
 editor.addEventListener("input", scheduleSave);
@@ -448,6 +771,7 @@ $("#backBtn").onclick = showList;
 pinBtn.onclick = async () => {
   current.pinned = !current.pinned;
   pinBtn.textContent = current.pinned ? "★" : "☆";
+  pinBtn.title = current.pinned ? "Remove from Favorites" : "Add to Favorites";
   await putNote(current);
 };
 $("#deleteBtn").onclick = async () => {
@@ -463,6 +787,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("#lightbox").classList.contains("hidden")) { $("#lightbox").classList.add("hidden"); return; }
   if (e.key === "Escape" && current && selectedImgs().length) { clearImgSelection(); return; }
   if (e.key === "Escape" && current) showList();
+  else if (e.key === "Escape" && view !== "all" && !e.target.closest?.("input")) goUp(); // back out of folders
   if (e.altKey && e.key.toLowerCase() === "n") { e.preventDefault(); createNote(); }
 });
 window.addEventListener("pagehide", flushSave);
@@ -470,7 +795,8 @@ window.addEventListener("pagehide", flushSave);
 // ---------- export / import ----------
 $("#exportBtn").onclick = async () => {
   const notes = await getAllNotes();
-  const blob = new Blob([JSON.stringify({ app: "snap-notes", version: 1, notes }, null, 1)], { type: "application/json" });
+  await loadFolders();
+  const blob = new Blob([JSON.stringify({ app: "snap-notes", version: 1, folders, notes }, null, 1)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `snap-notes-${new Date().toISOString().slice(0, 10)}.json`;
@@ -484,14 +810,19 @@ $("#importInput").onchange = async (e) => {
     const data = JSON.parse(await f.text());
     const notes = Array.isArray(data) ? data : data.notes;
     const batch = {};
-    for (const n of notes) if (n && n.id) batch[key(n.id)] = { ...n, html: sanitize(n.html || "") };
+    for (const n of notes) if (n && n.id) batch[key(n.id)] = { ...n, html: sanitize(n.html || "", true) };
+    if (Array.isArray(data.folders)) { // merge folders by id
+      await loadFolders();
+      for (const f of data.folders) if (f && f.id && typeof f.name === "string" && !folderById(f.id)) folders.push({ id: f.id, name: f.name });
+      batch.folders = folders;
+    }
     await chrome.storage.local.set(batch);
     renderList();
   } catch (err) { alert("Couldn't import that file: " + err.message); }
   e.target.value = "";
 };
 
-// ---------- right-click "Add to Snap Notes" inbox ----------
+// ---------- right-click "Add to Note Sidekick" inbox ----------
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 async function drainInbox() {
   const { inbox = [] } = await chrome.storage.local.get("inbox");
@@ -516,7 +847,7 @@ async function drainInbox() {
 }
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.inbox?.newValue?.length) drainInbox();
-  else if (!current && Object.keys(changes).some((k) => k.startsWith("note:"))) renderList(); // sync across windows
+  else if (!current && Object.keys(changes).some((k) => k.startsWith("note:") || k === "folders")) renderList(); // sync across windows
 });
 
 // ---------- start ----------

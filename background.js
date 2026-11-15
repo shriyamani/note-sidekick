@@ -3,8 +3,8 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(consol
 
 // Right-click menu: send selected text or an image from any page into the current note.
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({ id: "add-text", title: "Add selection to Snap Notes", contexts: ["selection"] });
-  chrome.contextMenus.create({ id: "add-image", title: "Add image to Snap Notes", contexts: ["image"] });
+  chrome.contextMenus.create({ id: "add-text", title: "Add selection to Note Sidekick", contexts: ["selection"] });
+  chrome.contextMenus.create({ id: "add-image", title: "Add image to Note Sidekick", contexts: ["image"] });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {

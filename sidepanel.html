@@ -2,14 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Snap Notes</title>
+  <title>Note Sidekick</title>
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
 <body>
   <!-- LIST VIEW -->
   <section id="listView" class="view">
     <header class="bar">
-      <h1>Notes <span id="count" class="muted"></span></h1>
+      <button id="listBackBtn" class="ghost hidden" title="Folders">←</button>
+      <h1><span id="listTitle">Notes</span> <span id="count" class="muted"></span></h1>
+      <button id="renameFolderBtn" class="icon hidden" title="Rename folder">✎</button>
+      <button id="deleteFolderBtn" class="icon danger hidden" title="Delete folder (notes are kept)">🗑</button>
+      <button id="foldersBtn" class="icon hdr-btn" title="Folders" aria-label="Folders"><svg class="hdr-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.17 6l2 2H20v10H4V6h5.17M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg></button>
+      <button id="favBtn" class="icon hdr-btn" title="Favorites" aria-label="Favorites"><svg class="hdr-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></svg></button>
       <button id="newBtn" class="primary" title="New note (Alt+N)">+ New</button>
     </header>
     <div class="searchWrap">
@@ -29,7 +34,8 @@
       <button id="backBtn" class="ghost" title="All notes (Esc)">← All notes</button>
       <span id="saveState" class="muted small"></span>
       <div class="spacer"></div>
-      <button id="pinBtn" class="icon" title="Pin note">☆</button>
+      <select id="folderSelect" title="Move to folder" aria-label="Folder"></select>
+      <button id="pinBtn" class="icon" title="Add to Favorites">☆</button>
       <button id="deleteBtn" class="icon danger" title="Delete note">🗑</button>
     </header>
     <input id="titleInput" class="title" placeholder="Untitled" />
@@ -37,8 +43,16 @@
       <button data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
       <button data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
       <button data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
-      <button data-cmd="insertUnorderedList" title="Bullet list">•≡</button>
-      <button data-cmd="insertOrderedList" title="Numbered list">1≡</button>
+      <span class="color-wrap">
+        <button id="textColorBtn" class="color-btn" title="Text color" aria-label="Text color" aria-haspopup="true" aria-expanded="false"><svg class="tb-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.49 17h2.42l1.27-3.58h5.65L16.09 17h2.42L13.25 3h-2.5L5.49 17zm4.42-5.61 2.03-5.79h.12l2.03 5.79H9.91z"/><rect class="tb-bar" x="2" y="20" width="20" height="4" rx="1"/></svg></button>
+        <div id="textColorMenu" class="color-menu hidden" role="menu" aria-label="Text color"></div>
+      </span>
+      <span class="color-wrap">
+        <button id="hiliteBtn" class="color-btn" title="Highlight color" aria-label="Highlight color" aria-haspopup="true" aria-expanded="false"><svg class="tb-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.06 5.19l3.75 3.75L7.75 18H4v-3.75l9.06-9.06zm4.82 2.68-3.75-3.75 1.83-1.83c.39-.39 1.02-.39 1.41 0l2.34 2.34c.39.39.39 1.02 0 1.41l-1.83 1.83z"/><rect class="tb-bar" x="2" y="20" width="20" height="4" rx="1"/></svg></button>
+        <div id="hiliteMenu" class="color-menu hidden" role="menu" aria-label="Highlight color"></div>
+      </span>
+      <button data-cmd="insertUnorderedList" title="Bullet list" aria-label="Bullet list"><svg class="tb-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z"/></svg></button>
+      <button data-cmd="insertOrderedList" title="Numbered list" aria-label="Numbered list"><svg class="tb-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 17h2v.5H3v1h1v.5H2v1h3v-4H2v1zm1-9h1V4H2v1h1v3zm-1 3h1.8L2 13.1v.9h3v-1H3.2L5 10.9V10H2v1zm5-6v2h14V5H7zm0 14h14v-2H7v2zm0-6h14v-2H7v2z"/></svg></button>
       <button id="checkBtn" title="Checklist item">☑</button>
       <button id="imgBtn" title="Insert image">🖼</button>
       <input id="imgInput" type="file" accept="image/*" multiple hidden />
