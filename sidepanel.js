@@ -804,6 +804,61 @@ $("#checkBtn").addEventListener("mousedown", (e) => {
 // ---------- indent / outdent ----------
 // In a list: nest / un-nest the item. Elsewhere: insert / remove a 4-space tab at the caret.
 const TAB = "\u00a0".repeat(4);
+const LINE_BLOCKS = /^(DIV|P|LI|H[1-6]|BLOCKQUOTE|PRE|UL|OL)$/;
+
+// The first text node of every line the selection touches (lines are split by <br> or block elements).
+function selectedLineStarts(range) {
+  const blockOf = (n) => { let e = n.parentElement; while (e !== editor && !LINE_BLOCKS.test(e.tagName)) e = e.parentElement; return e; };
+  const atOrAfter = (n, o, n2, o2) => { const r = document.createRange(); r.setStart(n, o); return r.comparePoint(n2, o2) >= 0; };
+  const starts = [];
+  const w = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  let prev = null, brk = true;
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    if (n.nodeType === 1) { if (n.tagName === "BR") brk = true; continue; }
+    if (!n.data.replace(/[\r\n]/g, "")) continue;
+    if (brk || !prev || blockOf(prev) !== blockOf(n)) starts.push(n);
+    prev = n; brk = false;
+  }
+  const { startContainer: sc, startOffset: so, endContainer: ec, endOffset: eo } = range;
+  let first = -1;
+  starts.forEach((s, i) => { if (atOrAfter(s, 0, sc, so)) first = i; }); // line holding the selection start
+  return starts.filter((s, i) =>
+    i === first || (i > first && atOrAfter(sc, so, s, 0) && !atOrAfter(ec, eo, s, 0)) // starts before the selection end
+  ).filter((s) => !s.parentElement.closest("li"));
+}
+
+// Indent / outdent every line in a multi-line selection. Returns false if the selection is on one line.
+function indentLines(sel, out) {
+  const range = sel.getRangeAt(0);
+  const lines = selectedLineStarts(range);
+  if (lines.length < 2) return false;
+  const { startContainer: sc, startOffset: so, endContainer: ec, endOffset: eo } = range;
+  const delta = new Map();
+  for (const t of [...lines].reverse()) { // bottom-up so earlier positions stay valid; execCommand keeps undo working
+    if (out) {
+      const m = t.data.match(/^[\u00a0 \t]{1,4}/);
+      if (!m) continue;
+      sel.setBaseAndExtent(t, 0, t, m[0].length);
+      document.execCommand("delete");
+      delta.set(t, -m[0].length);
+    } else {
+      sel.collapse(t, 0);
+      document.execCommand("insertText", false, TAB);
+      delta.set(t, TAB.length);
+    }
+  }
+  const fix = (n, o) => {
+    if (!delta.has(n)) return o;
+    const d = delta.get(n);
+    return Math.min(n.data.length, Math.max(0, d > 0 && o === 0 ? 0 : o + d));
+  };
+  try {
+    const first = lines[0];
+    const [an, ao] = sc.isConnected ? [sc, fix(sc, so)] : [first, 0];
+    sel.setBaseAndExtent(an, ao, ec, fix(ec, eo));
+  } catch {}
+  return true;
+}
 function indent(out) {
   const sel = getSelection();
   const n = sel.anchorNode;
@@ -814,6 +869,7 @@ function indent(out) {
     // nested lists created inside a checklist stay checklists
     editor.querySelectorAll("ul.checklist ul:not(.checklist)").forEach((u) => u.classList.add("checklist"));
   } else {
+    if (!sel.isCollapsed && indentLines(sel, out)) { scheduleSave(); updateToolbarState(); return; }
     if (!sel.isCollapsed) sel.collapseToStart();
     if (!out) document.execCommand("insertText", false, TAB);
     else {
