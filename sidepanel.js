@@ -32,6 +32,13 @@ function plainText(html) {
   d.querySelectorAll("li, p, div, br").forEach((el) => { el.before(" "); el.append(" "); });
   return d.textContent.replace(/\s+/g, " ").trim();
 }
+// Text split into its visual lines (blocks / <br>), empty lines dropped.
+function textLines(html) {
+  const d = document.createElement("div");
+  d.innerHTML = html;
+  d.querySelectorAll("li, p, div, br, h1, h2, h3, h4, h5, h6, blockquote, pre").forEach((el) => { el.before("\n"); el.append("\n"); });
+  return d.textContent.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+}
 function firstImage(html) {
   const m = html.match(/<img[^>]+src="([^"]+)"/);
   return m ? m[1] : null;
@@ -300,10 +307,13 @@ async function renderList() {
     meta.className = "meta";
     const t = document.createElement("div");
     t.className = "t";
-    t.textContent = (n.pinned ? "★ " : "") + (n.title || text.slice(0, 60) || "Untitled");
+    // Untitled notes: title is the note's first line; the overview shows the
+    // following lines from the top (or the whole note if it's one line).
+    const lines = n.title ? [] : textLines(n.html);
+    t.textContent = (n.pinned ? "★ " : "") + (n.title || lines[0] || "Untitled");
     const p = document.createElement("div");
     p.className = "p";
-    p.textContent = n.title ? text : text.slice(60);
+    p.textContent = n.title ? text : lines.length > 1 ? lines.slice(1).join(" ") : text;
     const imgCount = (n.html.match(/<img/g) || []).length;
     const d = document.createElement("div");
     d.className = "d";
