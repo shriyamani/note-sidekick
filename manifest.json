@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Note Sidekick",
   "version": "1.1.0",
-  "description": "Side-panel notes extension: allows unlimited notes, text formatting and pasted images.",
+  "description": "Side-panel notes extension: allows for unlimited notes, organization into folders, text formatting, pasting of images and deleted notes recovery.",
   "permissions": ["sidePanel", "storage", "unlimitedStorage", "contextMenus", "clipboardWrite"],
   "background": { "service_worker": "background.js" },
   "side_panel": { "default_path": "sidepanel.html" },

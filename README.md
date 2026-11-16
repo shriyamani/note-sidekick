@@ -1,6 +1,6 @@
 # Note Sidekick
 
-A side-panel notes Chrome extension which supports unlimited notes, text formatting and images.
+A side-panel notes extension that allows for unlimited notes, organization into folders, text formatting, pasting of images and deleted notes recovery.
 
 ## Features
 - **Images:** paste screenshots or copied images (Ctrl/Cmd+V), drag and drop image files, or use the 🖼 button. Large images are shrunk automatically to save space.

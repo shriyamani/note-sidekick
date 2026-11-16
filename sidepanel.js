@@ -1,6 +1,8 @@
 // Note Sidekick — side panel logic.
 // Each note is stored in chrome.storage.local under "note:<id>":
-//   { id, title, html, pinned, folderId, created, updated }
+//   { id, title, html, pinned, folderId, created, updated, deleted? }
+// Deleted notes keep their record with a "deleted" timestamp and show up in
+// Recently Deleted until they're recovered, deleted for good, or 30 days pass.
 // Folders are stored under "folders" (see the folders section).
 // Images live inside the note HTML as data: URLs ("unlimitedStorage" lifts the 10 MB cap).
 
@@ -17,12 +19,39 @@ let saveTimer = null;
 
 // ---------- storage ----------
 const key = (id) => "note:" + id;
-async function getAllNotes() {
+async function getAllNotes(includeDeleted = false) {
   const all = await chrome.storage.local.get(null);
-  return Object.entries(all).filter(([k]) => k.startsWith("note:")).map(([, v]) => v);
+  return Object.entries(all).filter(([k, v]) => k.startsWith("note:") && (includeDeleted || !v.deleted)).map(([, v]) => v);
 }
+const getDeletedNotes = async () => (await getAllNotes(true)).filter((n) => n.deleted);
 const putNote = (n) => chrome.storage.local.set({ [key(n.id)]: n });
-const removeNote = (id) => chrome.storage.local.remove(key(id));
+const removeNote = (id) => chrome.storage.local.remove(key(id)); // permanent
+
+// ---------- recently deleted ----------
+const TRASH_DAYS = 30;
+const DAY = 24 * 60 * 60 * 1000;
+const isBlank = (n) => !n.title && !plainText(n.html || "") && !/<img/i.test(n.html || "");
+// Blank notes are just removed; anything else goes to Recently Deleted.
+async function trashNote(n) {
+  if (isBlank(n)) { await removeNote(n.id); return; }
+  await putNote({ ...n, deleted: Date.now() });
+}
+async function recoverNote(n) {
+  const { deleted, ...rest } = n;
+  await putNote({ ...rest, updated: Date.now() });
+}
+const daysLeft = (n) => Math.max(0, Math.ceil((n.deleted + TRASH_DAYS * DAY - Date.now()) / DAY));
+async function purgeOldDeleted() {
+  const old = (await getDeletedNotes()).filter((n) => Date.now() - n.deleted > TRASH_DAYS * DAY);
+  if (old.length) await chrome.storage.local.remove(old.map((n) => key(n.id)));
+}
+async function emptyTrash() {
+  const gone = await getDeletedNotes();
+  if (!gone.length) return;
+  if (!confirm(`Permanently delete ${gone.length} note${gone.length > 1 ? "s" : ""}? This can't be undone.`)) return;
+  await chrome.storage.local.remove(gone.map((n) => key(n.id)));
+  renderList();
+}
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 // ---------- list view ----------
@@ -31,13 +60,6 @@ function plainText(html) {
   d.innerHTML = html;
   d.querySelectorAll("li, p, div, br").forEach((el) => { el.before(" "); el.append(" "); });
   return d.textContent.replace(/\s+/g, " ").trim();
-}
-// Text split into its visual lines (blocks / <br>), empty lines dropped.
-function textLines(html) {
-  const d = document.createElement("div");
-  d.innerHTML = html;
-  d.querySelectorAll("li, p, div, br, h1, h2, h3, h4, h5, h6, blockquote, pre").forEach((el) => { el.before("\n"); el.append("\n"); });
-  return d.textContent.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
 }
 function firstImage(html) {
   const m = html.match(/<img[^>]+src="([^"]+)"/);
@@ -53,8 +75,8 @@ function fmtDate(t) {
 // ---------- folders ----------
 // Folders live under "folders": [{ id, name }]. A note's folderId points at one (or is null).
 // "Favorites" is built in: it shows every starred (pinned) note, whatever folder it's in.
-// List screens: "all" (every note, with a Folders row on top) → "folders" (the folder list)
-//               → "fav" or a folder id (that folder's notes).
+// List screens: "all" (every note) → "folders" (the folder list) → a folder id (that folder's notes).
+// "fav" and "trash" (Recently Deleted) are reached from their header buttons.
 let folders = [];
 let view = "all";
 try { view = localStorage.getItem("view") || "all"; } catch {}
@@ -137,6 +159,7 @@ $("#listBackBtn").onclick = goUp;
 // Header shortcuts: click again to go back to all notes.
 $("#foldersBtn").onclick = () => setView(view === "folders" ? "all" : "folders");
 $("#favBtn").onclick = () => setView(view === "fav" ? "all" : "fav");
+$("#trashBtn").onclick = () => setView(view === "trash" ? "all" : "trash");
 $("#renameFolderBtn").onclick = () => {
   const f = folderById(view);
   if (!f) return;
@@ -254,11 +277,26 @@ function rowActions(n, titleEl) {
     });
     input.placeholder = "Note title";
   }, async () => {
-    const isEmpty = !n.title && !plainText(n.html) && !/<img/i.test(n.html);
-    if (!isEmpty && !confirm(`Delete "${n.title || "Untitled"}"?`)) return;
-    await removeNote(n.id);
+    await trashNote(n);
     renderList();
   });
+}
+// Buttons on a Recently Deleted row: recover, or delete for good.
+const ICON_RESTORE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>';
+function trashActions(n) {
+  const wrap = document.createElement("div");
+  wrap.className = "row-actions trash-actions";
+  const btn = (cls, label, svg, fn) => {
+    const b = document.createElement("button");
+    b.className = "row-btn " + cls; b.title = label; b.setAttribute("aria-label", label); b.innerHTML = svg;
+    b.onclick = async (e) => { e.stopPropagation(); await fn(); renderList(); };
+    wrap.append(b);
+  };
+  btn("", "Recover", ICON_RESTORE, () => recoverNote(n));
+  btn("danger", "Delete permanently", ICON_TRASH, async () => {
+    if (confirm(`Permanently delete "${n.title || "Untitled"}"? This can't be undone.`)) await removeNote(n.id);
+  });
+  return wrap;
 }
 function folderActions(f, nameEl) {
   return hoverActions(
@@ -271,31 +309,39 @@ function folderActions(f, nameEl) {
 async function renderList() {
   const q = search.value.trim().toLowerCase();
   await loadFolders();
-  if (view !== "all" && view !== "folders" && !inFolderView()) view = "all";
-  const all = await getAllNotes();
+  if (view !== "all" && view !== "folders" && view !== "trash" && !inFolderView()) view = "all";
+  const everything = await getAllNotes(true);
+  const all = everything.filter((n) => !n.deleted);
+  const trashed = everything.filter((n) => n.deleted);
   const folder = folderById(view);
+  const trash = view === "trash";
 
   // header
-  $("#listTitle").textContent = view === "folders" ? "Folders" : view === "fav" ? "★ Favorites" : folder ? "📁 " + folder.name : "Notes";
+  $("#listTitle").textContent = view === "folders" ? "Folders" : view === "fav" ? "★ Favorites" : trash ? "Recently Deleted" : folder ? "📁 " + folder.name : "Notes";
   $("#listBackBtn").classList.toggle("hidden", view === "all");
   $("#listBackBtn").title = folder ? "Folders" : "All notes";
   $("#renameFolderBtn").classList.toggle("hidden", !folder);
   $("#deleteFolderBtn").classList.toggle("hidden", !folder);
-  $("#newBtn").classList.toggle("hidden", view === "folders");
+  $("#newBtn").classList.toggle("hidden", view === "folders" || trash);
+  $("#emptyTrashBtn").classList.toggle("hidden", !trash || !trashed.length);
   $("#foldersBtn").classList.toggle("active", view === "folders" || !!folder);
+  $("#trashBtn").classList.toggle("active", trash);
+  $("#trashBtn").classList.toggle("hidden", !!folder); // folders have their own delete-folder 🗑
   $("#favBtn").classList.toggle("active", view === "fav");
   search.placeholder = view === "folders" ? "Search folders…" : "Search notes…";
 
   noteList.innerHTML = "";
   if (view === "folders") { $("#count").textContent = ""; renderFolders(all, q); return; }
 
-  let notes = all.filter((n) => view === "all" || (view === "fav" ? n.pinned : n.folderId === view));
+  let notes = trash ? trashed : all.filter((n) => view === "all" || (view === "fav" ? n.pinned : n.folderId === view));
   $("#count").textContent = notes.length ? `(${notes.length})` : "";
-  notes.sort((a, b) => (b.pinned - a.pinned) || (b.updated - a.updated));
+  if (trash) notes.sort((a, b) => b.deleted - a.deleted);
+  else notes.sort((a, b) => (b.pinned - a.pinned) || (b.updated - a.updated));
   if (q) notes = notes.filter((n) => (n.title + " " + plainText(n.html)).toLowerCase().includes(q));
 
   $("#empty").classList.toggle("hidden", notes.length > 0);
   if (q) $("#empty").textContent = "No notes match your search.";
+  else if (trash) $("#empty").textContent = `No recently deleted notes. Deleted notes stay here for ${TRASH_DAYS} days.`;
   else if (view === "fav") $("#empty").textContent = "No favorites yet. Star a note (☆) to add it here.";
   else if (folder) $("#empty").innerHTML = "This folder is empty. Click <b>+ New</b> to add a note here, or move a note in with the folder menu at the top of the note.";
   else $("#empty").innerHTML = "No notes yet. Click <b>+ New</b> to start.";
@@ -307,18 +353,17 @@ async function renderList() {
     meta.className = "meta";
     const t = document.createElement("div");
     t.className = "t";
-    // Untitled notes: title is the note's first line; the overview shows the
-    // following lines from the top (or the whole note if it's one line).
-    const lines = n.title ? [] : textLines(n.html);
-    t.textContent = (n.pinned ? "★ " : "") + (n.title || lines[0] || "Untitled");
+    t.textContent = (n.pinned ? "★ " : "") + (n.title || "Untitled");
     const p = document.createElement("div");
     p.className = "p";
-    p.textContent = n.title ? text : lines.length > 1 ? lines.slice(1).join(" ") : text;
+    p.textContent = text;
     const imgCount = (n.html.match(/<img/g) || []).length;
     const d = document.createElement("div");
     d.className = "d";
     const nf = !folder && folderById(n.folderId);
-    d.textContent = fmtDate(n.updated) + (imgCount ? ` · ${imgCount} image${imgCount > 1 ? "s" : ""}` : "") + (nf ? ` · 📁 ${nf.name}` : "");
+    d.textContent = trash
+      ? `Deleted ${fmtDate(n.deleted)} · ${daysLeft(n)} day${daysLeft(n) === 1 ? "" : "s"} left` + (imgCount ? ` · ${imgCount} image${imgCount > 1 ? "s" : ""}` : "")
+      : fmtDate(n.updated) + (imgCount ? ` · ${imgCount} image${imgCount > 1 ? "s" : ""}` : "") + (nf ? ` · 📁 ${nf.name}` : "");
     meta.append(t, p, d);
     li.append(meta);
     const src = firstImage(n.html);
@@ -328,8 +373,8 @@ async function renderList() {
       img.src = src;
       li.append(img);
     }
-    li.onclick = () => openNote(n);
-    li.append(rowActions(n, t));
+    if (trash) { li.classList.add("trashed"); li.append(trashActions(n)); }
+    else { li.onclick = () => openNote(n); li.append(rowActions(n, t)); }
     noteList.append(li);
   }
 }
@@ -341,7 +386,6 @@ function showList() {
   editorView.classList.add("hidden");
   listView.classList.remove("hidden");
   renderList();
-  search.focus();
 }
 function openNote(n) {
   current = n;
@@ -907,10 +951,10 @@ pinBtn.onclick = async () => {
 };
 $("#deleteBtn").onclick = async () => {
   if (!current) return;
-  const isEmpty = !current.title && !plainText(editor.innerHTML) && !editor.querySelector("img");
-  if (!isEmpty && !confirm("Delete this note?")) return;
-  await removeNote(current.id);
+  clearTimeout(saveTimer);
+  const n = { ...current, title: titleInput.value.trim(), html: editor.innerHTML.replace(/ class="selected"/g, "") };
   current = null;
+  await trashNote(n);
   showList();
 };
 search.addEventListener("input", renderList);
@@ -982,4 +1026,5 @@ chrome.storage.onChanged.addListener((changes) => {
 });
 
 // ---------- start ----------
-renderList().then(drainInbox);
+$("#emptyTrashBtn").onclick = emptyTrash;
+purgeOldDeleted().then(renderList).then(drainInbox);
