@@ -114,7 +114,6 @@ button.danger:hover { color: var(--danger); }
 #editor ul.checklist ul.checklist { padding-left: 20px; }
 #editor ul.checklist li::before { content: "☐"; position: absolute; left: 0; top: -0.15em; font-size: 1.4em; line-height: 1.1; cursor: pointer; }
 #editor ul.checklist li.done::before { content: "☑"; color: var(--accent); }
-#editor ul.checklist li.done { color: var(--muted); text-decoration: line-through; }
 #editor a { color: var(--accent); }
 
 #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; z-index: 10; cursor: zoom-out; }
