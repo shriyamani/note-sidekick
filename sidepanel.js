@@ -979,6 +979,18 @@ editor.addEventListener("input", (e) => {
   insertUndoable("<hr><div data-caret><br></div>");
 });
 
+// ---------- new checklist items start unchecked ----------
+// Enter in a checked item clones its "done" class; clear it on the new (empty) item.
+editor.addEventListener("input", (e) => {
+  if (e.inputType !== "insertParagraph") return;
+  const n = getSelection().anchorNode;
+  const li = n && (n.nodeType === 1 ? n : n.parentElement).closest("ul.checklist > li");
+  if (!li) return;
+  for (const item of [li, li.previousElementSibling]) {
+    if (item && item.tagName === "LI" && !item.textContent.trim()) item.classList.remove("done");
+  }
+});
+
 // ---------- buttons & keys ----------
 editor.addEventListener("input", scheduleSave);
 titleInput.addEventListener("input", scheduleSave);
