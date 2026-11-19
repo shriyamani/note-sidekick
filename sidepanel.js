@@ -470,18 +470,34 @@ function insertNodeAtCursor(node) {
   sel.removeAllRanges();
   sel.addRange(range);
 }
-function insertImage(src) {
-  const img = document.createElement("img");
-  img.src = src;
-  const frag = document.createDocumentFragment();
-  const after = document.createElement("div");
-  after.innerHTML = "<br>";          // gives you a line to keep typing under the image
-  frag.append(img, after);
-  insertNodeAtCursor(frag);
-  const sel = window.getSelection(), r = document.createRange();
-  r.setStart(after, 0); r.collapse(true);
+// Put the caret inside the editor (at the end if it's elsewhere).
+function ensureCaretInEditor() {
+  editor.focus();
+  const sel = window.getSelection();
+  if (sel.rangeCount && editor.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
+  const r = document.createRange();
+  r.selectNodeContents(editor);
+  r.collapse(false);
   sel.removeAllRanges(); sel.addRange(r);
+}
+// Insert HTML through execCommand so Ctrl+Z can undo it. The element marked
+// data-caret (if any) gets the caret afterwards.
+function insertUndoable(html) {
+  ensureCaretInEditor();
+  document.execCommand("insertHTML", false, html);
+  const mark = editor.querySelector("[data-caret]");
+  if (mark) {
+    mark.removeAttribute("data-caret");
+    const sel = window.getSelection(), r = document.createRange();
+    r.setStart(mark, 0); r.collapse(true);
+    sel.removeAllRanges(); sel.addRange(r);
+  }
   scheduleSave();
+}
+const escAttr = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+function insertImage(src) {
+  // the empty line after gives you somewhere to keep typing under the image
+  insertUndoable(`<img src="${escAttr(src)}"><div data-caret><br></div>`);
 }
 async function insertImageFiles(files) {
   for (const f of files) {
@@ -662,7 +678,17 @@ async function copyImages(imgs) {
   }
 }
 function deleteImages(imgs) {
-  imgs.forEach((i) => i.remove());
+  // Delete through execCommand so Ctrl+Z brings the images back.
+  editor.focus();
+  const sel = window.getSelection();
+  for (const img of imgs) {
+    img.classList.remove("selected");
+    if (!img.getAttribute("class")) img.removeAttribute("class");
+    const r = document.createRange();
+    r.selectNode(img);
+    sel.removeAllRanges(); sel.addRange(r);
+    document.execCommand("delete");
+  }
   updateSelBar();
   scheduleSave();
 }
@@ -696,7 +722,7 @@ editor.addEventListener("click", (e) => {
   updateSelBar();
   // checklist toggle when clicking the box area
   const li = e.target.closest("ul.checklist > li");
-  if (li && e.clientX - li.getBoundingClientRect().left < 22) {
+  if (li && e.clientX - li.getBoundingClientRect().left < 28) {
     li.classList.toggle("done");
     scheduleSave();
   }
@@ -936,6 +962,22 @@ function indent(out) {
   scheduleSave();
   updateToolbarState();
 }
+
+// ---------- horizontal line ----------
+// Typing "---" on an empty line turns it into a horizontal line (Ctrl+Z turns it back).
+editor.addEventListener("input", (e) => {
+  if (e.inputType !== "insertText" || e.data !== "-") return;
+  const sel = getSelection();
+  if (!sel.isCollapsed) return;
+  const t = sel.anchorNode;
+  if (!t || t.nodeType !== 3 || t.data !== "---" || sel.anchorOffset !== 3) return;
+  const isLineEdge = (n) => !n || (n.nodeType === 1 && (n.tagName === "BR" || LINE_BLOCKS.test(n.tagName)));
+  if (!isLineEdge(t.previousSibling) || !isLineEdge(t.nextSibling)) return; // "---" must be the whole line
+  const p = t.parentElement;
+  if (p !== editor && !/^(DIV|P)$/.test(p.tagName)) return; // not inside lists, code, bold, etc.
+  sel.setBaseAndExtent(t, 0, t, 3);
+  insertUndoable("<hr><div data-caret><br></div>");
+});
 
 // ---------- buttons & keys ----------
 editor.addEventListener("input", scheduleSave);
